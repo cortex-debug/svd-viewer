@@ -12,8 +12,8 @@ import { ConfigProvider, Table, TableColumnsType } from 'antd';
 import { ColumnType, ExpandableConfig } from 'antd/es/table/interface';
 import { default as React, useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { CommandDefinition } from '../../../common';
-import { getNestedValue } from '../../../common/utils';
-import { CDTTreeItem, CDTTreeTableActionColumn, CDTTreeTableColumnDefinition, CDTTreeTableStringColumn, CTDTreeWebviewContext } from '../types';
+import { findNestedValue } from '../../../common/utils';
+import { CDTTreeItem, CDTTreeItemResource, CDTTreeTableActionColumn, CDTTreeTableColumnDefinition, CDTTreeTableStringColumn, CTDTreeWebviewContext } from '../types';
 import { classNames, createHighlightedText, createLabelWithTooltip, filterTree, getAncestors, traverseTree } from './utils';
 import { debounce } from 'throttle-debounce';
 import { SearchOverlay } from './search-overlay';
@@ -23,7 +23,7 @@ import { ExpandIcon } from './expand-icon';
 /**
  * Component to render a tree table.
  */
-export type ComponentTreeTableProps<T = unknown> = {
+export type ComponentTreeTableProps<T extends CDTTreeItemResource = CDTTreeItemResource> = {
     /**
      * Information about the columns to be rendered.
      */
@@ -33,9 +33,9 @@ export type ComponentTreeTableProps<T = unknown> = {
      */
     dataSource?: CDTTreeItem<T>[];
     /**
-     * Function to sort the root elements of the data source.
+    * Function to sort the data source.
      */
-    dataSourceComparer?: (a: CDTTreeItem<T>, b: CDTTreeItem<T>) => number;
+    dataSourceSorter?: (dataSource: CDTTreeItem<T>[]) => CDTTreeItem<T>[];
     /**
      * Configuration for the expansion of the tree table.
      */
@@ -47,7 +47,7 @@ export type ComponentTreeTableProps<T = unknown> = {
         /**
          * Callback to be called when a row is expanded or collapsed.
          */
-        onExpand?: ExpandableConfig<CDTTreeItem<unknown>>['onExpand'];
+        onExpand?: ExpandableConfig<CDTTreeItem<T>>['onExpand'];
     },
     /**
      * Configuration for the pinning of the tree table.
@@ -60,7 +60,7 @@ export type ComponentTreeTableProps<T = unknown> = {
         /**
          * Callback to be called when a row is pinned or unpinned.
          */
-        onPin?: (event: React.UIEvent, pinned: boolean, record: CDTTreeItem<unknown>) => void;
+        onPin?: (event: React.UIEvent, pinned: boolean, record: CDTTreeItem<T>) => void;
     }
     /**
      * Configuration for the actions of the tree table.
@@ -69,12 +69,13 @@ export type ComponentTreeTableProps<T = unknown> = {
         /**
          * Callback to be called when an action is triggered.
          */
-        onAction?: (event: React.UIEvent, command: CommandDefinition, value: unknown, record: CDTTreeItem<unknown>) => void;
+        onAction?: (event: React.UIEvent, command: CommandDefinition, value: unknown, record: CDTTreeItem<T>) => void;
     }
 };
 
 interface BodyRowProps extends React.HTMLAttributes<HTMLDivElement> {
     'data-row-key': string;
+    record: CDTTreeItem<CDTTreeItemResource>;
 }
 
 const BodyRow = React.forwardRef<HTMLDivElement, BodyRowProps>((props, ref) => {
@@ -85,7 +86,7 @@ const BodyRow = React.forwardRef<HTMLDivElement, BodyRowProps>((props, ref) => {
             tabIndex={0}
             key={props['data-row-key']}
             {...props}
-            {...CTDTreeWebviewContext.create({ webviewSection: 'tree-item', cdtTreeItemId: props['data-row-key'] })}
+            {...CTDTreeWebviewContext.create({ webviewSection: 'tree-item', cdtTreeItemId: props['data-row-key'], cdtTreeItemType: props.record.resource.__type })}
         />
     );
 });
@@ -107,7 +108,7 @@ function useWindowSize() {
     return size;
 }
 
-export const AntDComponentTreeTable = <T,>(props: ComponentTreeTableProps<T>) => {
+export const AntDComponentTreeTable = <T extends CDTTreeItemResource,>(props: ComponentTreeTableProps<T>) => {
     const { width, height } = useWindowSize();
     const [globalSearchText, setGlobalSearchText] = useState<string | undefined>();
     const globalSearchRef = React.useRef<SearchOverlay>(null);
@@ -123,11 +124,11 @@ export const AntDComponentTreeTable = <T,>(props: ComponentTreeTableProps<T>) =>
         if (globalSearchText) {
             data = filterTree(data, globalSearchText);
         }
-        if (props.dataSourceComparer) {
-            data = [...data].sort(props.dataSourceComparer);
+        if (props.dataSourceSorter) {
+            data = props.dataSourceSorter([...data]);
         }
         return data;
-    }, [props.dataSource, props.dataSourceComparer, globalSearchText]);
+    }, [props.dataSource, props.dataSourceSorter, globalSearchText]);
 
     // ==== Search ====
 
@@ -176,7 +177,7 @@ export const AntDComponentTreeTable = <T,>(props: ComponentTreeTableProps<T>) =>
 
 
     const handleExpand = useCallback(
-        (expanded: boolean, record: CDTTreeItem) => {
+        (expanded: boolean, record: CDTTreeItem<T>) => {
             props.expansion?.onExpand?.(expanded, record);
         },
         [props.expansion?.onExpand]
@@ -268,12 +269,12 @@ export const AntDComponentTreeTable = <T,>(props: ComponentTreeTableProps<T>) =>
     // ==== Renderers ====
 
     const renderStringColumn = useCallback(
-        (label: string, item: CDTTreeItem<unknown>, columnDef: CDTTreeTableStringColumn) => {
-            const icon = columnDef.icon ? <i className={classNames('cell-icon', columnDef.icon)}></i> : null;
-            let content = createHighlightedText(label, columnDef.highlight);
+        (label: string, item: CDTTreeItem<T>, column: CDTTreeTableStringColumn) => {
+            const icon = column.icon ? <i className={classNames('cell-icon', column.icon)}></i> : null;
+            let content = createHighlightedText(label, column.highlight);
 
-            if (columnDef.tooltip) {
-                content = createLabelWithTooltip(<span>{content}</span>, columnDef.tooltip);
+            if (column.tooltip) {
+                content = createLabelWithTooltip(<span>{content}</span>, column.tooltip);
             }
 
             return (
@@ -287,7 +288,7 @@ export const AntDComponentTreeTable = <T,>(props: ComponentTreeTableProps<T>) =>
     );
 
     const renderActionColumn = useCallback(
-        (column: CDTTreeTableActionColumn | undefined, record: CDTTreeItem<unknown>) => {
+        (column: CDTTreeTableActionColumn | undefined, record: CDTTreeItem<T>) => {
             const actions: React.ReactNode[] = [];
 
             if (record.pinned !== undefined) {
@@ -329,23 +330,50 @@ export const AntDComponentTreeTable = <T,>(props: ComponentTreeTableProps<T>) =>
 
     // ==== Columns ====
 
-    const createColumns = (columnDefinitions: CDTTreeTableColumnDefinition[]): TableColumnsType<CDTTreeItem> => {
-        function stringColumn(def: CDTTreeTableColumnDefinition): ColumnType<CDTTreeItem> {
+    const createColumns = (columnDefinitions: CDTTreeTableColumnDefinition[]): TableColumnsType<CDTTreeItem<T>> => {
+        function stringColumn(columnDefinition: CDTTreeTableColumnDefinition): ColumnType<CDTTreeItem<T>> {
             return {
-                title: def.field,
-                dataIndex: ['columns', def.field, 'label'],
+                title: columnDefinition.field,
+                dataIndex: ['columns', columnDefinition.field, 'label'],
                 width: 0,
                 ellipsis: true,
-                render: (label, record) => renderStringColumn(label, record, getNestedValue<CDTTreeTableStringColumn>(record, ['columns', def.field]))
+                render: (label, record) => {
+                    const column = findNestedValue<CDTTreeTableStringColumn>(record, ['columns', columnDefinition.field]);
+
+                    if (!column) {
+                        return undefined;
+                    }
+
+                    return renderStringColumn(label, record, column);
+                },
+                onCell: (record) => {
+                    const column = findNestedValue<CDTTreeTableStringColumn>(record, ['columns', columnDefinition.field]);
+
+                    if (!column) {
+                        return {};
+                    }
+
+                    const colSpan = column.colSpan;
+                    if (colSpan) {
+                        return {
+                            colSpan: colSpan === 'fill' ? columnDefinitions.length : colSpan,
+                            style: {
+                                zIndex: 1
+                            }
+                        };
+                    }
+
+                    return {};
+                }
             };
         }
 
-        function actionColumn(def: CDTTreeTableColumnDefinition): ColumnType<CDTTreeItem> {
+        function actionColumn(columnDefinition: CDTTreeTableColumnDefinition): ColumnType<CDTTreeItem<T>> {
             return {
-                title: def.field,
-                dataIndex: ['columns', def.field],
-                width: 64,
-                render: renderActionColumn
+                title: columnDefinition.field,
+                dataIndex: ['columns', columnDefinition.field],
+                width: 16 * 5,
+                render: renderActionColumn,
             };
         }
 
@@ -420,7 +448,7 @@ export const AntDComponentTreeTable = <T,>(props: ComponentTreeTableProps<T>) =>
     }, [autoSelectRowRef.current]);
 
     const onRowClick = useCallback(
-        (record: CDTTreeItem, event: React.MouseEvent<HTMLElement>) => {
+        (record: CDTTreeItem<T>, event: React.MouseEvent<HTMLElement>) => {
             const isExpanded = expandedRowKeys?.includes(record.id);
             handleExpand(!isExpanded, record);
             selectRow(record);
@@ -446,7 +474,7 @@ export const AntDComponentTreeTable = <T,>(props: ComponentTreeTableProps<T>) =>
                 style={{ outline: 'none' }}
                 onKeyDown={onTableKeyDown}
             >
-                <Table<CDTTreeItem>
+                <Table<CDTTreeItem<T>>
                     ref={tblRef}
                     columns={columns}
                     dataSource={filteredData}
@@ -457,6 +485,7 @@ export const AntDComponentTreeTable = <T,>(props: ComponentTreeTableProps<T>) =>
                     pagination={false}
                     rowClassName={(record) => classNames({ 'ant-table-row-selected': record.key === selection?.key, 'ant-table-row-matched': record.matching ?? false })}
                     onRow={(record) => ({
+                        record,
                         onClick: (event) => onRowClick(record, event),
                     })}
                     expandable={{
